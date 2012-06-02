@@ -1,0 +1,250 @@
+#!/bin/bash
+#
+# Projecto de Shell Script
+# Sistemas Operativos  2012
+#
+# Informática - Redes e Multimédia
+# Universidade dos Açores
+#
+# Grupo:
+#   Helder Correia 20102556
+#   Miguel Ferreira 20102552
+
+PROG_NAME=$(basename $0)
+
+if [ "`id -u`" != "0" ]; then
+  echo "$PROG_NAME: Permission denied. You need to be root to run this script." >&2
+  exit 1
+fi
+
+# summary file location
+FILE="$HOME/$PROG_NAME/resumo"
+
+# ensure the summary file exists
+mkdir -p $(dirname $FILE)
+touch $FILE
+
+# find the users dir in the current platform
+USERS_DIR="\/home\/"
+if [ `uname` == "Darwin" ]; then
+  USERS_DIR="\/Users\/"
+fi
+
+usage() {
+  echo "usage: $PROG_NAME [-r] [-D NUM] [-d] [DIR ...]"
+  echo "       $PROG_NAME {-l | -e} DIR"
+  echo "       $PROG_NAME {-L | -E} PATTERN"
+  echo "       $PROG_NAME {-a | -h}"
+}
+
+help() {
+  usage
+  echo
+  echo "$PROG_NAME counts, for each provided directory, the number of"
+  echo "sub-directories, executable files, non-executable files and links."
+  echo "Must be run as root, and only for system directories. Use 'contfd'"
+  echo "instead, for user's home directories."
+  echo "Output is in the following format:"
+  echo
+  echo "/dirX/subdir  n_subdir  n_xfiles  n_files  n_links  date  time"
+  echo
+  echo "Options:"
+  echo "  -d      Analyze specified directory(ies). If none are provided, the"
+  echo "          current directory will be used."
+  echo "  -r      Also recursively analyze the subdirectories of each DIR."
+  echo "          This option assumes -d."
+  echo "  -D NUM  Descend at most NUM directory levels below each provided"
+  echo "          DIR. This option assumes both -r and -d."
+  echo
+  echo "  -a      Show all stored information on pre-analyzed directories."
+  echo "  -l DIR  Show the stored information for the provided directory."
+  echo "  -e DIR  Erase stored information on the provided directory."
+  echo
+  echo "  -L PATTERN"
+  echo "          Show all stored information for dirs matching the provided"
+  echo "          pattern."
+  echo "  -E PATTERN"
+  echo "          Erase stored information for dirs matching the provided"
+  echo "          pattern. This is the opposite of -L, so -L can be used"
+  echo "          to test PATTERN first."
+  echo
+  echo "  -h      Print this help screen and exit."
+  echo
+  echo "Patterns:"
+  echo "  PATTERN is an awk regular expression (without opening and closing"
+  echo "  slash), so special characters (such as '/') must be escaped properly."
+  echo
+  echo "  Examples:"
+  echo "    $PROG_NAME -L \"Dropbox\""
+  echo "      Lists all records with 'Dropbox' somewhere in the path."
+  echo
+  echo "    $PROG_NAME -L \"[st]i$\""
+  echo "      List all records for dirs that end in 'si' or 'ti'."
+  echo
+  echo "    $PROG_NAME -E \"Dropbox\/test\""
+  echo "      Erase data for 'test' and sub-directories, inside 'Dropbox'."
+  echo
+  echo "    $PROG_NAME -E \"\""
+  echo "      Erase all data stored on file."
+}
+
+error() {
+  echo "$PROG_NAME: $1" >&2
+  usage >&2
+  echo "Run with -h for more information." >&2
+  exit 1
+}
+
+warning() {
+  echo "$PROG_NAME: warning: $1" >&2
+}
+
+# Filter a path to only allow directories relative or absolute
+# to the user's $HOME, and without a trailing slash.
+# arguments:
+#  1 - dir path
+filter_dir() {
+  local wdir="$1"
+  if [[ "$wdir" == $USERS_DIR* ]]; then
+    warning "this script should be used for system files only. $wdir will be ignored"
+    exit 1
+  elif [ $wdir == "/" ]; then
+    echo "$wdir"
+    exit 0
+  fi
+  # return without trailing slash
+  echo "$wdir" | sed -e "s/\/*$//"
+}
+
+# analyze a provided directory, showing the result
+# on screen and adding it to file.
+# arguments: 
+#  1 - dir path
+process_dir() {
+  local fl="--dereference-command-line-symlink-to-dir"
+
+  # for Mac users, the follow links option in ls is different
+  if [ "`uname`" = "Darwin" ]; then
+    fl="-P"
+  fi
+
+  local listing=`ls -lA $fl "$1"`
+
+  declare -i dirs=`echo "$listing" | grep ^d | wc -l`
+  declare -i files=`echo "$listing" | grep ^-..- | wc -l`
+  declare -i xfiles=`echo "$listing" | grep ^-..x | wc -l`
+  declare -i links=`echo "$listing" | grep ^l | wc -l`
+
+  local date=`date +"%d/%m/%Y"`
+  local time=`date +"%H:%M:%S"`
+
+  # erase the analyzed dir on file (if exists)
+  # before updating, which prevents duplicates
+  $0 -e "$1" 2&> /dev/null
+
+  echo -e "$1\t$dirs\t$files\t$xfiles\t$links\t$date\t$time" | tee -a $FILE
+}
+
+# Rewrite file with new content, using a temporary file.
+# Avoids possible loss of data when using output redirection
+# (>) while the file is being read by a program like awk.
+# Arguments:
+#  1 - new content for the file
+rewrite() {
+  local tmp="${FILE}.tmp"
+  cat $1 > $tmp && mv $tmp $FILE
+}
+
+declare -a DIRS # array with directories to be analyzed
+declare -i DEPTH=-1 # number for find's maxdepth option
+
+# parse command line options (see help() for more information)
+while getopts :drD:al:L:e:E:h opt; do
+  case $opt in
+    d)  ANALYZE="yes"
+        ;;
+    r)  ANALYZE="recursive"
+        ;;
+    D)  ANALYZE="indepth"
+        DEPTH=$OPTARG
+        if [ $DEPTH -lt 1 ]; then
+          error "maximum recursion depth option (-$opt) must be a positive integer. '$OPTARG' given"
+        fi
+        ;;
+    a)  cat $FILE
+        exit 0
+        ;;
+    l)  awk -F'\t' '$1 == "'"$(filter_dir "$OPTARG")"'"' $FILE
+        exit 0
+        ;;
+    L)  awk -F'\t' '$1 ~ /'"$OPTARG"'/' $FILE
+        exit 0
+        ;;
+    e)  awk -F'\t' '$1 != "'"$(filter_dir "$OPTARG")"'"' $FILE | rewrite
+        exit 0
+        ;;
+    E)  awk -F'\t' '$1 !~ /'"$OPTARG"'/' $FILE | rewrite
+        exit 0
+        ;;
+    h)  help
+        exit 0
+        ;;
+   \?)  error "illegal option: -$OPTARG"
+        ;;
+    :)  case $OPTARG in
+            D) error "option -$OPTARG requires a number";;
+          l|e) error "option -$OPTARG requires a directory";;
+          L|E) error "option -$OPTARG requires a pattern (for awk)";;
+        esac
+        exit 1
+        ;;
+  esac
+done
+
+# default option is -d when no options found
+if [ $OPTIND -eq 1 ]; then
+  ANALYZE="yes"
+else
+  # remove parsed options from arguments
+  # (remaining arguments should be the dirs to -d)
+  shift $((OPTIND-1))
+fi
+
+# if no dirs were provided, assume the current one
+if [ $# -eq 0 ]; then
+  set -- $PWD
+fi
+
+# filter provided list of directories
+for dir in "$@"; do
+  dir_f=`filter_dir "$dir"`
+  if [ -d "$dir_f" ]; then
+    DIRS[${#DIRS[*]}]="$dir_f"
+  elif [ $? -eq 0 ]; then
+    warning "not a valid directory: $dir"
+  fi
+done
+if [ ${#DIRS} -eq 0 ]; then
+  error "no valid directories were provided"
+fi
+
+# find maximum depth
+if [ "$ANALYZE" = "yes" ]; then
+  DEPTH=0
+fi
+if [ $DEPTH -gt -1 ]; then
+  MAXDEPTH="-maxdepth $DEPTH"
+fi
+
+# analyze provided dirs
+if [ -n "$ANALYZE" ]; then
+  for dir in "${DIRS[@]}"; do
+    find -H "$dir" $MAXDEPTH -type d -not -regex "^$USERS_DIR.*" -print0 \
+    | while IFS= read -r -d $'\0' subdir; do
+      process_dir "$subdir"
+    done
+  done
+  # sort to keep the file tidy
+  sort $FILE | rewrite
+fi
+
