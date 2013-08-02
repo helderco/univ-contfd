@@ -21,4 +21,4 @@ And...
 
 ### Enunciado (portuguese)
 
-O enunciado poderá ser consultado na área de [downloads](https://github.com/helderco/contfd/downloads).
+O enunciado está disponível no ficheiro [Projecto_ShellScript.pdf](Projecto_ShellScript.pdf).
